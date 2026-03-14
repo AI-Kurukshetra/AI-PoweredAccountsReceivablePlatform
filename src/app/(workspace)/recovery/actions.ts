@@ -30,6 +30,10 @@ const recoverySchema = z.object({
   ),
 });
 
+const recoveryDrillSchema = z.object({
+  snapshotId: z.string().uuid("Invalid snapshot."),
+});
+
 export async function createRecoverySnapshotAction(
   _prevState: RecoveryActionState,
   formData: FormData,
@@ -78,5 +82,48 @@ export async function createRecoverySnapshotAction(
   }
 
   revalidatePath("/recovery");
+  redirect("/recovery");
+}
+
+export async function runRestoreDrillAction(formData: FormData) {
+  const membership = await getMembershipContext();
+
+  if (!membership) {
+    redirect("/login");
+  }
+
+  const parsed = recoveryDrillSchema.safeParse({
+    snapshotId: formData.get("snapshotId"),
+  });
+
+  if (!parsed.success) {
+    redirect("/recovery");
+  }
+
+  const supabase = await createClient();
+  const nowIso = new Date().toISOString();
+  await supabase
+    .from("recovery_snapshots")
+    .update({
+      status: "verified",
+      restore_tested_at: nowIso,
+    })
+    .eq("company_id", membership.companyId)
+    .eq("id", parsed.data.snapshotId);
+
+  await supabase.from("audit_logs").insert({
+    company_id: membership.companyId,
+    actor_id: membership.userId,
+    entity_type: "recovery",
+    entity_id: parsed.data.snapshotId,
+    action: "snapshot.restore_drill",
+    details: {
+      message: "Restore drill executed and marked verified.",
+      tested_at: nowIso,
+    },
+  });
+
+  revalidatePath("/recovery");
+  revalidatePath("/dashboard");
   redirect("/recovery");
 }

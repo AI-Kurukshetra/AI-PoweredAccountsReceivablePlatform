@@ -2,7 +2,10 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { RecoveryForm } from "@/components/workspace/recovery-form";
-import { createRecoverySnapshotAction } from "@/app/(workspace)/recovery/actions";
+import {
+  createRecoverySnapshotAction,
+  runRestoreDrillAction,
+} from "@/app/(workspace)/recovery/actions";
 import { getMembershipContext } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 
@@ -114,6 +117,14 @@ export default async function RecoveryPage() {
                   {snapshot.notes ? (
                     <p className="mt-4 text-sm text-[var(--ink-soft)]">{snapshot.notes}</p>
                   ) : null}
+                  <div className="mt-4 flex justify-end">
+                    <form action={runRestoreDrillAction}>
+                      <input type="hidden" name="snapshotId" value={snapshot.id} />
+                      <button type="submit" className="secondary-button px-3 py-2 text-xs">
+                        Mark restore drill done
+                      </button>
+                    </form>
+                  </div>
                 </article>
               ))}
             </div>

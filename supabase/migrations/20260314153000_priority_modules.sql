@@ -52,18 +52,21 @@ for each row execute function public.set_updated_at();
 alter table public.invoice_templates enable row level security;
 alter table public.integration_connections enable row level security;
 
+drop policy if exists "invoice_templates_member_access" on public.invoice_templates;
 create policy "invoice_templates_member_access"
 on public.invoice_templates
 for all
 using (public.is_company_member(company_id))
 with check (public.is_company_member(company_id));
 
+drop policy if exists "integration_connections_member_access" on public.integration_connections;
 create policy "integration_connections_member_access"
 on public.integration_connections
 for all
 using (public.is_company_member(company_id))
 with check (public.is_company_member(company_id));
 
+drop policy if exists "profiles_select_company_members" on public.profiles;
 create policy "profiles_select_company_members"
 on public.profiles
 for select

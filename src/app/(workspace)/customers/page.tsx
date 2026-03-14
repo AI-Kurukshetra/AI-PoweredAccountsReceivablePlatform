@@ -2,15 +2,49 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusPill } from "@/components/ui/status-pill";
+import {
+  resolveCreditAlertAction,
+  runCreditAlertScanAction,
+} from "@/app/(workspace)/customers/actions";
+import { getMembershipContext } from "@/lib/company";
 import { getWorkspaceSnapshot } from "@/lib/workspace-data";
 import { formatCurrency } from "@/lib/format";
+import { createClient } from "@/lib/supabase/server";
 
 export default async function CustomersPage() {
+  const membership = await getMembershipContext();
   const snapshot = await getWorkspaceSnapshot();
 
-  if (!snapshot) {
+  if (!snapshot || !membership) {
     return null;
   }
+
+  const supabase = await createClient();
+  const { data: alertsData } = await supabase
+    .from("credit_alerts")
+    .select("id, severity, reason, status, created_at, details, customer:customers(name)")
+    .eq("company_id", membership.companyId)
+    .eq("status", "open")
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  const openAlerts = (alertsData ?? []).map((alert) => ({
+    ...alert,
+    customer: Array.isArray(alert.customer) ? alert.customer[0] ?? null : alert.customer,
+  })) as {
+    id: string;
+    severity: string;
+    reason: string;
+    status: string;
+    created_at: string;
+    details: {
+      open_balance?: number;
+      credit_limit?: number;
+      overdue_balance?: number;
+      overdue_invoices?: number;
+    } | null;
+    customer: { name: string } | null;
+  }[];
 
   const totalCredit = snapshot.customers.reduce(
     (sum, customer) => sum + Number(customer.credit_limit),
@@ -82,6 +116,14 @@ export default async function CustomersPage() {
               days
             </p>
           </div>
+          <div className="soft-panel rounded-[24px] px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.22em] text-[var(--stroke-strong)]">
+              Open credit alerts
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-[var(--foreground)]">
+              {openAlerts.length}
+            </p>
+          </div>
         </div>
       </section>
 
@@ -128,6 +170,55 @@ export default async function CustomersPage() {
           <EmptyState
             title="No customers yet"
             copy="Add customers to begin issuing invoices and tracking payment behavior."
+          />
+        )}
+      </SectionCard>
+
+      <SectionCard eyebrow="Credit alerts" title="Automated credit monitoring and over-limit warnings">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <p className="text-sm text-[var(--ink-soft)]">
+            Scan open receivables against credit limits and overdue exposure.
+          </p>
+          <form action={runCreditAlertScanAction}>
+            <button type="submit" className="secondary-button">
+              Scan credit alerts
+            </button>
+          </form>
+        </div>
+        {openAlerts.length ? (
+          <div className="space-y-3">
+            {openAlerts.map((alert) => (
+              <article key={alert.id} className="rounded-[20px] border border-[var(--stroke)] bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--stroke-strong)]">
+                      {alert.customer?.name ?? "Unknown customer"}
+                    </p>
+                    <h3 className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+                      {alert.reason}
+                    </h3>
+                    <p className="mt-1 text-sm text-[var(--ink-soft)]">
+                      Open balance {formatCurrency(Number(alert.details?.open_balance ?? 0))} ·
+                      Credit limit {formatCurrency(Number(alert.details?.credit_limit ?? 0))}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-2">
+                    <StatusPill label={alert.severity} />
+                    <form action={resolveCreditAlertAction}>
+                      <input type="hidden" name="alertId" value={alert.id} />
+                      <button type="submit" className="secondary-button px-3 py-2 text-xs">
+                        Resolve
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No open credit alerts"
+            copy="Run a scan to evaluate over-limit and overdue conditions across your customer book."
           />
         )}
       </SectionCard>

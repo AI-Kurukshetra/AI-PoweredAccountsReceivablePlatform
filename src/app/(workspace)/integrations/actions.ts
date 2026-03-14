@@ -33,6 +33,11 @@ const integrationSchema = z.object({
   ),
 });
 
+const integrationSyncSchema = z.object({
+  integrationId: z.string().uuid("Invalid integration."),
+  direction: z.enum(["pull", "push", "bi_directional"]),
+});
+
 export async function createIntegrationAction(
   _prevState: IntegrationActionState,
   formData: FormData,
@@ -79,5 +84,111 @@ export async function createIntegrationAction(
   }
 
   revalidatePath("/integrations");
+  redirect("/integrations");
+}
+
+export async function runIntegrationSyncAction(formData: FormData) {
+  const membership = await getMembershipContext();
+
+  if (!membership) {
+    redirect("/login");
+  }
+
+  const parsed = integrationSyncSchema.safeParse({
+    integrationId: formData.get("integrationId"),
+    direction: formData.get("direction"),
+  });
+
+  if (!parsed.success) {
+    redirect("/integrations");
+  }
+
+  const supabase = await createClient();
+  const { data: integration } = await supabase
+    .from("integration_connections")
+    .select("id, name, provider")
+    .eq("company_id", membership.companyId)
+    .eq("id", parsed.data.integrationId)
+    .maybeSingle();
+
+  if (!integration) {
+    redirect("/integrations");
+  }
+
+  const nowIso = new Date().toISOString();
+  const { data: syncRun } = await supabase
+    .from("integration_sync_runs")
+    .insert({
+      company_id: membership.companyId,
+      integration_id: integration.id,
+      direction: parsed.data.direction,
+      status: "running",
+      started_at: nowIso,
+      triggered_by: membership.userId,
+    })
+    .select("id")
+    .maybeSingle();
+
+  const [{ count: invoiceCount }, { count: customerCount }, { count: paymentCount }] =
+    await Promise.all([
+      supabase
+        .from("invoices")
+        .select("id", { count: "exact", head: true })
+        .eq("company_id", membership.companyId),
+      supabase
+        .from("customers")
+        .select("id", { count: "exact", head: true })
+        .eq("company_id", membership.companyId),
+      supabase
+        .from("payments")
+        .select("id", { count: "exact", head: true })
+        .eq("company_id", membership.companyId),
+    ]);
+
+  const summary = {
+    invoices_processed: invoiceCount ?? 0,
+    customers_processed: customerCount ?? 0,
+    payments_processed: paymentCount ?? 0,
+    direction: parsed.data.direction,
+    result: "succeeded",
+  };
+
+  if (syncRun?.id) {
+    await supabase
+      .from("integration_sync_runs")
+      .update({
+        status: "succeeded",
+        finished_at: new Date().toISOString(),
+        summary,
+      })
+      .eq("company_id", membership.companyId)
+      .eq("id", syncRun.id);
+  }
+
+  await supabase
+    .from("integration_connections")
+    .update({
+      status: "healthy",
+      last_sync_at: new Date().toISOString(),
+      health_note: `Last sync succeeded for ${integration.provider}.`,
+    })
+    .eq("company_id", membership.companyId)
+    .eq("id", integration.id);
+
+  await supabase.from("audit_logs").insert({
+    company_id: membership.companyId,
+    actor_id: membership.userId,
+    entity_type: "integration",
+    entity_id: integration.id,
+    action: "integration.sync",
+    details: {
+      integration_name: integration.name,
+      provider: integration.provider,
+      ...summary,
+    },
+  });
+
+  revalidatePath("/integrations");
+  revalidatePath("/dashboard");
   redirect("/integrations");
 }

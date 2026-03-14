@@ -1,14 +1,39 @@
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusPill } from "@/components/ui/status-pill";
+import {
+  createReminderPolicyAction,
+  runReminderAutomationAction,
+} from "@/app/(workspace)/collections/actions";
+import { getMembershipContext } from "@/lib/company";
+import { createClient } from "@/lib/supabase/server";
 import { getWorkspaceSnapshot } from "@/lib/workspace-data";
 
 export default async function CollectionsPage() {
+  const membership = await getMembershipContext();
   const snapshot = await getWorkspaceSnapshot();
 
-  if (!snapshot) {
+  if (!snapshot || !membership) {
     return null;
   }
+
+  const supabase = await createClient();
+  const { data: policiesData } = await supabase
+    .from("reminder_policies")
+    .select("id, name, trigger_type, days_offset, stage, channel, is_active, created_at")
+    .eq("company_id", membership.companyId)
+    .order("created_at", { ascending: false });
+
+  const policies = (policiesData ?? []) as {
+    id: string;
+    name: string;
+    trigger_type: "before_due" | "after_due";
+    days_offset: number;
+    stage: string;
+    channel: string;
+    is_active: boolean;
+    created_at: string;
+  }[];
 
   return (
     <div className="space-y-5">
@@ -114,6 +139,106 @@ export default async function CollectionsPage() {
               copy="Invoice disputes and collection holds will appear here once customers challenge invoices."
             />
           )}
+        </SectionCard>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[1.12fr_0.88fr]">
+        <SectionCard eyebrow="Automation" title="Automated reminder policies">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-[var(--ink-soft)]">
+              Apply reminder sequences based on due-date offsets and aging state.
+            </p>
+            <form action={runReminderAutomationAction}>
+              <button type="submit" className="secondary-button">
+                Run reminder automation
+              </button>
+            </form>
+          </div>
+          {policies.length ? (
+            <div className="space-y-3">
+              {policies.map((policy) => (
+                <article key={policy.id} className="rounded-[20px] border border-[var(--stroke)] bg-white p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-[var(--stroke-strong)]">
+                        {policy.trigger_type.replaceAll("_", " ")}
+                      </p>
+                      <h3 className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+                        {policy.name}
+                      </h3>
+                      <p className="mt-1 text-sm text-[var(--ink-soft)]">
+                        {policy.stage} · {policy.channel} · {policy.days_offset} day(s)
+                      </p>
+                    </div>
+                    <StatusPill label={policy.is_active ? "Healthy" : "Draft"} />
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No reminder policies"
+              copy="Create policy rules to automate pre-due and overdue follow-up reminders."
+            />
+          )}
+        </SectionCard>
+
+        <SectionCard eyebrow="Create" title="Add reminder policy">
+          <form action={createReminderPolicyAction} className="space-y-4">
+            <div>
+              <label className="text-sm text-[var(--stroke-strong)]">Policy name</label>
+              <input name="name" required minLength={2} className="form-input mt-1" />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-sm text-[var(--stroke-strong)]">Trigger</label>
+                <select name="triggerType" className="form-select mt-1" defaultValue="before_due">
+                  <option value="before_due">Before due</option>
+                  <option value="after_due">After due</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-[var(--stroke-strong)]">Days offset</label>
+                <input
+                  name="daysOffset"
+                  type="number"
+                  min={0}
+                  max={120}
+                  defaultValue={3}
+                  className="form-input mt-1"
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-sm text-[var(--stroke-strong)]">Channel</label>
+                <select name="channel" className="form-select mt-1" defaultValue="email">
+                  <option value="email">Email</option>
+                  <option value="sms">SMS</option>
+                  <option value="call_task">Call task</option>
+                </select>
+              </div>
+              <div className="flex items-end">
+                <label className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                  <input type="checkbox" name="isActive" defaultChecked />
+                  Active policy
+                </label>
+              </div>
+            </div>
+            <div>
+              <label className="text-sm text-[var(--stroke-strong)]">Stage label</label>
+              <input
+                name="stage"
+                required
+                minLength={2}
+                defaultValue="3 days before due date"
+                className="form-input mt-1"
+              />
+            </div>
+            <button type="submit" className="primary-button w-full">
+              Create reminder policy
+            </button>
+          </form>
         </SectionCard>
       </div>
     </div>

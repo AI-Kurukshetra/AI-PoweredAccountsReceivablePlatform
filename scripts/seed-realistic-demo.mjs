@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { randomUUID } from "crypto";
 import { createClient } from "@supabase/supabase-js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -67,6 +66,45 @@ const supabase = createClient(
   },
 );
 
+const REQUIRED_CORE_TABLES = [
+  "companies",
+  "profiles",
+  "company_members",
+  "customers",
+  "invoices",
+  "invoice_line_items",
+  "payments",
+  "reminders",
+  "disputes",
+  "documents",
+  "audit_logs",
+];
+
+const OPTIONAL_TABLES = [
+  "invoice_templates",
+  "integration_connections",
+  "invoice_deliveries",
+  "payment_gateway_accounts",
+  "recovery_snapshots",
+  "security_controls",
+  "invoice_automations",
+  "reminder_policies",
+  "credit_alerts",
+  "integration_sync_runs",
+];
+
+const REQUIRED_CUSTOMER_COLUMNS = [
+  "portal_enabled",
+  "portal_access_token",
+];
+
+const REQUIRED_MIGRATION_FILES = [
+  "supabase/migrations/20260314120000_initial_invoice_mvp.sql",
+  "supabase/migrations/20260314153000_priority_modules.sql",
+  "supabase/migrations/20260314190000_missing_must_have_modules.sql",
+  "supabase/migrations/20260314213000_must_have_automation_depth.sql",
+];
+
 const DEMO_OWNER = {
   email: process.env.DEMO_OWNER_EMAIL ?? "evelyn.carter@ridgeway-demo.example",
   password: process.env.DEMO_OWNER_PASSWORD ?? "OwnerDemo#2026",
@@ -117,6 +155,63 @@ async function expectNoError(result, label) {
   }
 
   return result.data;
+}
+
+async function fetchAvailableTables() {
+  const response = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/`, {
+    headers: {
+      apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      Accept: "application/openapi+json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Could not inspect schema via REST API (status ${response.status}).`);
+  }
+
+  const openApi = await response.json();
+  const tableNames = Object.keys(openApi.paths ?? {}).map((pathKey) => pathKey.replace(/^\//, ""));
+  return new Set(tableNames);
+}
+
+function buildMigrationHintMessage() {
+  return [
+    "Run these migrations in your Supabase SQL Editor for the same project used by NEXT_PUBLIC_SUPABASE_URL:",
+    ...REQUIRED_MIGRATION_FILES.map((filePath, index) => `${index + 1}. ${filePath}`),
+    "Then run: NOTIFY pgrst, 'reload schema';",
+  ].join("\n");
+}
+
+async function inspectSchemaCapabilities() {
+  const availableTables = await fetchAvailableTables();
+  const missingCoreTables = REQUIRED_CORE_TABLES.filter((tableName) => !availableTables.has(tableName));
+  const missingOptionalTables = OPTIONAL_TABLES.filter((tableName) => !availableTables.has(tableName));
+
+  if (missingCoreTables.length > 0) {
+    throw new Error(
+      `Schema prerequisites missing. Missing core tables: ${missingCoreTables.join(", ")}\n${buildMigrationHintMessage()}`,
+    );
+  }
+
+  const { error: customerColumnsError } = await supabase
+    .from("customers")
+    .select(REQUIRED_CUSTOMER_COLUMNS.join(", "))
+    .limit(1);
+
+  if (customerColumnsError) {
+    return {
+      availableTables,
+      hasCustomerPortalColumns: false,
+      missingOptionalTables,
+    };
+  }
+
+  return {
+    availableTables,
+    hasCustomerPortalColumns: true,
+    missingOptionalTables,
+  };
 }
 
 async function findOrCreateOwner() {
@@ -228,13 +323,17 @@ async function findOrCreateCompany(ownerId) {
   return inserted.data.id;
 }
 
-async function clearCompanyData(companyId) {
+async function clearCompanyData(companyId, capabilities) {
   const tablesToDeleteByCompany = [
+    "integration_sync_runs",
+    "credit_alerts",
     "documents",
     "reminders",
+    "reminder_policies",
     "disputes",
     "payments",
     "invoice_deliveries",
+    "invoice_automations",
     "invoice_templates",
     "integration_connections",
     "payment_gateway_accounts",
@@ -246,6 +345,9 @@ async function clearCompanyData(companyId) {
   ];
 
   for (const table of tablesToDeleteByCompany) {
+    if (!capabilities.availableTables.has(table)) {
+      continue;
+    }
     const { error } = await supabase.from(table).delete().eq("company_id", companyId);
     if (error) {
       throw new Error(`Could not clear ${table}: ${error.message}`);
@@ -274,7 +376,12 @@ async function ensureOwnerMembership(companyId, ownerId) {
   }
 }
 
-async function seedCompany(companyId, ownerId) {
+async function seedCompany(companyId, ownerId, capabilities) {
+  let automationCount = 0;
+  let reminderPolicyCount = 0;
+  let creditAlertCount = 0;
+  let syncRunCount = 0;
+
   const customers = [
     {
       key: "meridian",
@@ -460,13 +567,26 @@ async function seedCompany(companyId, ownerId) {
         industry: "Distribution",
       },
     },
-  ].map((customer) => ({
-    company_id: companyId,
-    ...customer,
-  }));
+  ].map((customer) => {
+    const entry = { ...customer };
+    delete entry.key;
+    return {
+      company_id: companyId,
+      ...entry,
+    };
+  });
+
+  const customersToInsert = capabilities.hasCustomerPortalColumns
+    ? customers
+    : customers.map((customer) => {
+        const sanitized = { ...customer };
+        delete sanitized.portal_enabled;
+        delete sanitized.portal_access_token;
+        return sanitized;
+      });
 
   const insertedCustomers = await expectNoError(
-    await supabase.from("customers").insert(customers).select("id, name, external_ref"),
+    await supabase.from("customers").insert(customersToInsert).select("id, name, external_ref"),
     "Could not insert customers",
   );
 
@@ -754,24 +874,26 @@ async function seedCompany(companyId, ownerId) {
       delivered_at: addDays(-62, 14),
       confirmed_at: addDays(-61, 10),
     },
-  ].map((delivery) => ({
+  ].map(({ invoice, customer, ...delivery }) => ({
     company_id: companyId,
-    invoice_id: invoiceMap[delivery.invoice],
-    customer_id: customerMap[delivery.customer],
+    invoice_id: invoiceMap[invoice],
+    customer_id: customerMap[customer],
     ...delivery,
     created_by: ownerId,
   }));
 
-  await expectNoError(
-    await supabase.from("invoice_deliveries").insert(deliveries),
-    "Could not insert invoice deliveries",
-  );
+  if (capabilities.availableTables.has("invoice_deliveries")) {
+    await expectNoError(
+      await supabase.from("invoice_deliveries").insert(deliveries),
+      "Could not insert invoice deliveries",
+    );
+  }
 
   const payments = [
     {
       customer: "Atlas Freight Services",
       invoice: "INV-260314-002",
-      amount: 19149,
+      amount: 19092,
       status: "settled",
       channel: "ach",
       external_ref: "PMT-240201",
@@ -791,7 +913,7 @@ async function seedCompany(companyId, ownerId) {
     {
       customer: "Polaris Data Centers",
       invoice: "INV-260314-007",
-      amount: 55650,
+      amount: 55544,
       status: "settled",
       channel: "wire",
       external_ref: "PMT-240205",
@@ -828,10 +950,10 @@ async function seedCompany(companyId, ownerId) {
       received_at: addDays(-22, 11),
       metadata: { gateway: "Stripe US Merchant", refund_reason: "duplicate charge claim" },
     },
-  ].map((payment) => ({
+  ].map(({ customer, invoice, ...payment }) => ({
     company_id: companyId,
-    customer_id: customerMap[payment.customer],
-    invoice_id: invoiceMap[payment.invoice],
+    customer_id: customerMap[customer],
+    invoice_id: invoiceMap[invoice],
     ...payment,
   }));
 
@@ -891,10 +1013,10 @@ async function seedCompany(companyId, ownerId) {
       status: "escalated",
       scheduled_for: addDays(0, 15),
     },
-  ].map((reminder) => ({
+  ].map(({ invoice, customer, ...reminder }) => ({
     company_id: companyId,
-    invoice_id: invoiceMap[reminder.invoice],
-    customer_id: customerMap[reminder.customer],
+    invoice_id: invoiceMap[invoice],
+    customer_id: customerMap[customer],
     ...reminder,
   }));
 
@@ -902,6 +1024,47 @@ async function seedCompany(companyId, ownerId) {
     await supabase.from("reminders").insert(reminders),
     "Could not insert reminders",
   );
+
+  if (capabilities.availableTables.has("reminder_policies")) {
+    const reminderPolicies = [
+      {
+        company_id: companyId,
+        name: "Pre-due email nudge",
+        trigger_type: "before_due",
+        days_offset: 5,
+        stage: "5 days before due date",
+        channel: "email",
+        is_active: true,
+        created_by: ownerId,
+      },
+      {
+        company_id: companyId,
+        name: "Post-due SMS escalation",
+        trigger_type: "after_due",
+        days_offset: 3,
+        stage: "3 days overdue",
+        channel: "sms",
+        is_active: true,
+        created_by: ownerId,
+      },
+      {
+        company_id: companyId,
+        name: "Collector call task",
+        trigger_type: "after_due",
+        days_offset: 10,
+        stage: "10 days overdue escalation",
+        channel: "call_task",
+        is_active: true,
+        created_by: ownerId,
+      },
+    ];
+
+    await expectNoError(
+      await supabase.from("reminder_policies").insert(reminderPolicies),
+      "Could not insert reminder policies",
+    );
+    reminderPolicyCount = reminderPolicies.length;
+  }
 
   const disputes = [
     {
@@ -959,10 +1122,63 @@ async function seedCompany(companyId, ownerId) {
     },
   ];
 
-  await expectNoError(
-    await supabase.from("invoice_templates").insert(templates),
-    "Could not insert invoice templates",
-  );
+  let insertedTemplates = [];
+  if (capabilities.availableTables.has("invoice_templates")) {
+    insertedTemplates = await expectNoError(
+      await supabase
+        .from("invoice_templates")
+        .insert(templates)
+        .select("id, name"),
+      "Could not insert invoice templates",
+    );
+  }
+
+  if (capabilities.availableTables.has("invoice_automations")) {
+    const templateMap = new Map(insertedTemplates.map((template) => [template.name, template.id]));
+    const invoiceAutomations = [
+      {
+        company_id: companyId,
+        customer_id: customerMap["Meridian Medical Group"],
+        template_id: templateMap.get("Standard Enterprise Invoice") ?? null,
+        name: "Meridian monthly supply invoice",
+        automation_mode: "recurring",
+        cadence_days: 30,
+        next_run_date: isoDate(3),
+        auto_send: true,
+        delivery_channel: "email",
+        default_notes: "Auto-generated monthly replenishment invoice.",
+        line_items: [
+          { description: "Monthly sterile supply bundle", quantity: 1, unitPrice: 18500, taxRate: 8.25 },
+          { description: "Distribution handling", quantity: 1, unitPrice: 650, taxRate: 8.25 },
+        ],
+        is_active: true,
+        created_by: ownerId,
+      },
+      {
+        company_id: companyId,
+        customer_id: customerMap["Summit Precision Parts"],
+        template_id: templateMap.get("Portal Self-Service Invoice") ?? null,
+        name: "Summit contract billing",
+        automation_mode: "contract",
+        cadence_days: 30,
+        next_run_date: isoDate(10),
+        auto_send: true,
+        delivery_channel: "portal",
+        default_notes: "Contract milestone auto-billing run.",
+        line_items: [
+          { description: "CNC consumables block", quantity: 1, unitPrice: 9400, taxRate: 6.5 },
+        ],
+        is_active: true,
+        created_by: ownerId,
+      },
+    ];
+
+    await expectNoError(
+      await supabase.from("invoice_automations").insert(invoiceAutomations),
+      "Could not insert invoice automations",
+    );
+    automationCount = invoiceAutomations.length;
+  }
 
   const integrations = [
     {
@@ -1015,10 +1231,70 @@ async function seedCompany(companyId, ownerId) {
     },
   ];
 
-  await expectNoError(
-    await supabase.from("integration_connections").insert(integrations),
-    "Could not insert integration connections",
-  );
+  let insertedIntegrations = [];
+  if (capabilities.availableTables.has("integration_connections")) {
+    insertedIntegrations = await expectNoError(
+      await supabase
+        .from("integration_connections")
+        .insert(integrations)
+        .select("id, name"),
+      "Could not insert integration connections",
+    );
+  }
+
+  if (capabilities.availableTables.has("integration_sync_runs") && insertedIntegrations.length) {
+    const integrationMap = new Map(insertedIntegrations.map((integration) => [integration.name, integration.id]));
+    const syncRuns = [
+      {
+        company_id: companyId,
+        integration_id: integrationMap.get("NetSuite AR Sync"),
+        direction: "bi_directional",
+        status: "succeeded",
+        summary: {
+          invoices_processed: 10,
+          customers_processed: 8,
+          payments_processed: 6,
+        },
+        started_at: addDays(-1, 6),
+        finished_at: addDays(-1, 6, 7),
+        triggered_by: ownerId,
+      },
+      {
+        company_id: companyId,
+        integration_id: integrationMap.get("Stripe Event Stream"),
+        direction: "push",
+        status: "succeeded",
+        summary: {
+          payment_events: 12,
+          failed_events: 1,
+        },
+        started_at: addDays(0, 8),
+        finished_at: addDays(0, 8, 2),
+        triggered_by: ownerId,
+      },
+      {
+        company_id: companyId,
+        integration_id: integrationMap.get("SFTP Month-End Export"),
+        direction: "push",
+        status: "failed",
+        summary: {
+          error: "Remote SFTP endpoint timeout",
+          retries: 2,
+        },
+        started_at: addDays(-2, 4),
+        finished_at: addDays(-2, 4, 5),
+        triggered_by: ownerId,
+      },
+    ].filter((run) => run.integration_id);
+
+    if (syncRuns.length) {
+      await expectNoError(
+        await supabase.from("integration_sync_runs").insert(syncRuns),
+        "Could not insert integration sync runs",
+      );
+      syncRunCount = syncRuns.length;
+    }
+  }
 
   const gateways = [
     {
@@ -1049,10 +1325,12 @@ async function seedCompany(companyId, ownerId) {
     },
   ];
 
-  await expectNoError(
-    await supabase.from("payment_gateway_accounts").insert(gateways),
-    "Could not insert payment gateway accounts",
-  );
+  if (capabilities.availableTables.has("payment_gateway_accounts")) {
+    await expectNoError(
+      await supabase.from("payment_gateway_accounts").insert(gateways),
+      "Could not insert payment gateway accounts",
+    );
+  }
 
   const snapshots = [
     {
@@ -1093,10 +1371,12 @@ async function seedCompany(companyId, ownerId) {
     },
   ];
 
-  await expectNoError(
-    await supabase.from("recovery_snapshots").insert(snapshots),
-    "Could not insert recovery snapshots",
-  );
+  if (capabilities.availableTables.has("recovery_snapshots")) {
+    await expectNoError(
+      await supabase.from("recovery_snapshots").insert(snapshots),
+      "Could not insert recovery snapshots",
+    );
+  }
 
   const controls = [
     {
@@ -1149,10 +1429,53 @@ async function seedCompany(companyId, ownerId) {
     },
   ];
 
-  await expectNoError(
-    await supabase.from("security_controls").insert(controls),
-    "Could not insert security controls",
-  );
+  if (capabilities.availableTables.has("security_controls")) {
+    await expectNoError(
+      await supabase.from("security_controls").insert(controls),
+      "Could not insert security controls",
+    );
+  }
+
+  if (capabilities.availableTables.has("credit_alerts")) {
+    const creditAlerts = [
+      {
+        company_id: companyId,
+        customer_id: customerMap["Harborline Hotels"],
+        severity: "critical",
+        reason: "Over credit limit",
+        status: "open",
+        details: {
+          customer_name: "Harborline Hotels",
+          open_balance: 25861.3,
+          credit_limit: 110000,
+          overdue_balance: 25861.3,
+          overdue_invoices: 1,
+        },
+        created_by: ownerId,
+      },
+      {
+        company_id: companyId,
+        customer_id: customerMap["Atlas Freight Services"],
+        severity: "warning",
+        reason: "Overdue receivables exposure",
+        status: "open",
+        details: {
+          customer_name: "Atlas Freight Services",
+          open_balance: 18343.5,
+          credit_limit: 95000,
+          overdue_balance: 18343.5,
+          overdue_invoices: 1,
+        },
+        created_by: ownerId,
+      },
+    ];
+
+    await expectNoError(
+      await supabase.from("credit_alerts").insert(creditAlerts),
+      "Could not insert credit alerts",
+    );
+    creditAlertCount = creditAlerts.length;
+  }
 
   const documents = [
     {
@@ -1320,19 +1643,30 @@ async function seedCompany(companyId, ownerId) {
     invoiceCount: invoiceBlueprints.length,
     paymentCount: payments.length,
     reminderCount: reminders.length,
-    deliveryCount: deliveries.length,
+    deliveryCount: capabilities.availableTables.has("invoice_deliveries") ? deliveries.length : 0,
     disputeCount: disputes.length,
     documentCount: documents.length,
+    automationCount,
+    reminderPolicyCount,
+    creditAlertCount,
+    syncRunCount,
   };
 }
 
 async function main() {
   console.log("Starting realistic demo seed...");
+  const capabilities = await inspectSchemaCapabilities();
+  if (capabilities.missingOptionalTables.length > 0) {
+    console.log(
+      `Warning: optional module tables missing, continuing with partial seed: ${capabilities.missingOptionalTables.join(", ")}`,
+    );
+    console.log(buildMigrationHintMessage());
+  }
   const owner = await findOrCreateOwner();
   const companyId = await findOrCreateCompany(owner.id);
-  await clearCompanyData(companyId);
+  await clearCompanyData(companyId, capabilities);
   await ensureOwnerMembership(companyId, owner.id);
-  const counts = await seedCompany(companyId, owner.id);
+  const counts = await seedCompany(companyId, owner.id, capabilities);
 
   console.log("");
   console.log("Realistic demo dataset is ready.");
@@ -1341,7 +1675,7 @@ async function main() {
   console.log(`Company: ${DEMO_COMPANY.name}`);
   console.log(`Workspace slug: ${DEMO_COMPANY.slug}`);
   console.log(
-    `Seeded ${counts.customerCount} customers, ${counts.invoiceCount} invoices, ${counts.paymentCount} payments, ${counts.reminderCount} reminders, ${counts.deliveryCount} deliveries, ${counts.disputeCount} disputes, and ${counts.documentCount} documents.`,
+    `Seeded ${counts.customerCount} customers, ${counts.invoiceCount} invoices, ${counts.paymentCount} payments, ${counts.reminderCount} reminders, ${counts.deliveryCount} deliveries, ${counts.disputeCount} disputes, ${counts.documentCount} documents, ${counts.automationCount} invoice automations, ${counts.reminderPolicyCount} reminder policies, ${counts.creditAlertCount} credit alerts, and ${counts.syncRunCount} sync runs.`,
   );
 }
 

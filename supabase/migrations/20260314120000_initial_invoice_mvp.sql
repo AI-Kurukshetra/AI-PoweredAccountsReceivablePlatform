@@ -1,21 +1,87 @@
 create extension if not exists pgcrypto;
 
-create type public.app_role as enum ('owner', 'admin', 'finance_manager', 'collector', 'viewer');
-create type public.invoice_status as enum (
-  'draft',
-  'scheduled',
-  'sent',
-  'partial',
-  'overdue',
-  'paid',
-  'disputed',
-  'void'
-);
-create type public.payment_status as enum ('pending', 'settled', 'failed', 'refunded');
-create type public.payment_channel as enum ('card', 'ach', 'wire', 'wallet');
-create type public.reminder_channel as enum ('email', 'sms', 'call_task');
-create type public.reminder_status as enum ('queued', 'sent', 'escalated', 'canceled');
-create type public.document_kind as enum ('invoice_pdf', 'contract', 'proof', 'dispute_attachment');
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public'
+      and t.typname = 'app_role'
+  ) then
+    create type public.app_role as enum ('owner', 'admin', 'finance_manager', 'collector', 'viewer');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public'
+      and t.typname = 'invoice_status'
+  ) then
+    create type public.invoice_status as enum (
+      'draft',
+      'scheduled',
+      'sent',
+      'partial',
+      'overdue',
+      'paid',
+      'disputed',
+      'void'
+    );
+  end if;
+
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public'
+      and t.typname = 'payment_status'
+  ) then
+    create type public.payment_status as enum ('pending', 'settled', 'failed', 'refunded');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public'
+      and t.typname = 'payment_channel'
+  ) then
+    create type public.payment_channel as enum ('card', 'ach', 'wire', 'wallet');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public'
+      and t.typname = 'reminder_channel'
+  ) then
+    create type public.reminder_channel as enum ('email', 'sms', 'call_task');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public'
+      and t.typname = 'reminder_status'
+  ) then
+    create type public.reminder_status as enum ('queued', 'sent', 'escalated', 'canceled');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_type t
+    join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public'
+      and t.typname = 'document_kind'
+  ) then
+    create type public.document_kind as enum ('invoice_pdf', 'contract', 'proof', 'dispute_attachment');
+  end if;
+end
+$$;
 
 create table if not exists public.companies (
   id uuid primary key default gen_random_uuid(),
@@ -222,9 +288,9 @@ set search_path = public
 as $$
   select exists (
     select 1
-    from public.company_members member
-    where member.company_id = target_company_id
-      and member.user_id = auth.uid()
+    from public.company_members cm
+    where cm.company_id = target_company_id
+      and cm.user_id = auth.uid()
   );
 $$;
 
@@ -284,17 +350,17 @@ for all
 using (
   exists (
     select 1
-    from public.invoices invoice
-    where invoice.id = invoice_line_items.invoice_id
-      and public.is_company_member(invoice.company_id)
+    from public.invoices inv
+    where inv.id = invoice_id
+      and public.is_company_member(inv.company_id)
   )
 )
 with check (
   exists (
     select 1
-    from public.invoices invoice
-    where invoice.id = invoice_line_items.invoice_id
-      and public.is_company_member(invoice.company_id)
+    from public.invoices inv
+    where inv.id = invoice_id
+      and public.is_company_member(inv.company_id)
   )
 );
 

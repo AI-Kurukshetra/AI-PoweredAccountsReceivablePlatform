@@ -132,6 +132,35 @@ export type Database = {
         };
         Update: Partial<Database["public"]["Tables"]["documents"]["Insert"]>;
       };
+      credit_alerts: {
+        Row: {
+          company_id: string;
+          created_at: string;
+          created_by: string | null;
+          customer_id: string;
+          details: Json;
+          id: string;
+          reason: string;
+          resolved_at: string | null;
+          severity: string;
+          status: string;
+          updated_at: string;
+        };
+        Insert: {
+          company_id: string;
+          created_at?: string;
+          created_by?: string | null;
+          customer_id: string;
+          details?: Json;
+          id?: string;
+          reason: string;
+          resolved_at?: string | null;
+          severity?: string;
+          status?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["credit_alerts"]["Insert"]>;
+      };
       invoice_deliveries: {
         Row: {
           channel: string;
@@ -291,6 +320,47 @@ export type Database = {
         };
         Update: Partial<Database["public"]["Tables"]["invoice_templates"]["Insert"]>;
       };
+      invoice_automations: {
+        Row: {
+          auto_send: boolean;
+          automation_mode: string;
+          cadence_days: number;
+          company_id: string;
+          created_at: string;
+          created_by: string | null;
+          customer_id: string;
+          default_notes: string | null;
+          delivery_channel: string | null;
+          id: string;
+          is_active: boolean;
+          last_generated_at: string | null;
+          line_items: Json;
+          name: string;
+          next_run_date: string;
+          template_id: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          auto_send?: boolean;
+          automation_mode?: string;
+          cadence_days?: number;
+          company_id: string;
+          created_at?: string;
+          created_by?: string | null;
+          customer_id: string;
+          default_notes?: string | null;
+          delivery_channel?: string | null;
+          id?: string;
+          is_active?: boolean;
+          last_generated_at?: string | null;
+          line_items?: Json;
+          name: string;
+          next_run_date: string;
+          template_id?: string | null;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["invoice_automations"]["Insert"]>;
+      };
       integration_connections: {
         Row: {
           category: string;
@@ -323,6 +393,33 @@ export type Database = {
           webhook_url?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["integration_connections"]["Insert"]>;
+      };
+      integration_sync_runs: {
+        Row: {
+          company_id: string;
+          created_at: string;
+          direction: string;
+          finished_at: string | null;
+          id: string;
+          integration_id: string;
+          started_at: string | null;
+          status: string;
+          summary: Json;
+          triggered_by: string | null;
+        };
+        Insert: {
+          company_id: string;
+          created_at?: string;
+          direction?: string;
+          finished_at?: string | null;
+          id?: string;
+          integration_id: string;
+          started_at?: string | null;
+          status?: string;
+          summary?: Json;
+          triggered_by?: string | null;
+        };
+        Update: Partial<Database["public"]["Tables"]["integration_sync_runs"]["Insert"]>;
       };
       payments: {
         Row: {
@@ -464,6 +561,33 @@ export type Database = {
           status?: string;
         };
         Update: Partial<Database["public"]["Tables"]["reminders"]["Insert"]>;
+      };
+      reminder_policies: {
+        Row: {
+          channel: string;
+          company_id: string;
+          created_at: string;
+          created_by: string | null;
+          days_offset: number;
+          id: string;
+          is_active: boolean;
+          name: string;
+          stage: string;
+          trigger_type: string;
+        };
+        Insert: {
+          channel?: string;
+          company_id: string;
+          created_at?: string;
+          created_by?: string | null;
+          days_offset?: number;
+          id?: string;
+          is_active?: boolean;
+          name: string;
+          stage: string;
+          trigger_type: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["reminder_policies"]["Insert"]>;
       };
       security_controls: {
         Row: {

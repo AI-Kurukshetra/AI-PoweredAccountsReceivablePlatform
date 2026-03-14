@@ -19,7 +19,10 @@ jest.mock("@/lib/supabase/server", () => ({
   createClient: (...args: unknown[]) => mockCreateClient(...args),
 }));
 
-import { createIntegrationAction } from "@/app/(workspace)/integrations/actions";
+import {
+  createIntegrationAction,
+  runIntegrationSyncAction,
+} from "@/app/(workspace)/integrations/actions";
 
 function buildFormData(values: Record<string, string>) {
   const formData = new FormData();
@@ -91,6 +94,120 @@ describe("createIntegrationAction", () => {
         webhook_url: "https://example.com/webhooks/netsuite",
         created_by: "user-1",
         config: { scope: "Customers, invoices" },
+      }),
+    );
+    expect(mockRevalidatePath).toHaveBeenCalledWith("/integrations");
+    expect(mockRedirect).toHaveBeenCalledWith("/integrations");
+  });
+});
+
+describe("runIntegrationSyncAction", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("records a successful sync run and updates connection health", async () => {
+    mockGetMembershipContext.mockResolvedValue({
+      companyId: "company-1",
+      userId: "user-1",
+    });
+
+    const mockIntegrationMaybeSingle = jest.fn().mockResolvedValue({
+      data: {
+        id: "integration-1",
+        name: "NetSuite Sync",
+        provider: "NetSuite",
+      },
+    });
+    const mockSyncRunMaybeSingle = jest.fn().mockResolvedValue({
+      data: { id: "sync-run-1" },
+    });
+    const mockCountEq = jest.fn().mockResolvedValue({ count: 4 });
+    const mockCountEq2 = jest.fn().mockResolvedValue({ count: 6 });
+    const mockCountEq3 = jest.fn().mockResolvedValue({ count: 2 });
+    const mockSyncUpdateEqSecond = jest.fn().mockResolvedValue({ error: null });
+    const mockSyncUpdateEqFirst = jest.fn(() => ({ eq: mockSyncUpdateEqSecond }));
+    const mockConnectionUpdateEqSecond = jest.fn().mockResolvedValue({ error: null });
+    const mockConnectionUpdateEqFirst = jest.fn(() => ({ eq: mockConnectionUpdateEqSecond }));
+    const mockAuditInsert = jest.fn().mockResolvedValue({ error: null });
+
+    mockCreateClient.mockResolvedValue({
+      from: jest.fn((table: string) => {
+        if (table === "integration_connections") {
+          return {
+            select: jest.fn(() => ({
+              eq: jest.fn(() => ({
+                eq: jest.fn(() => ({
+                  maybeSingle: mockIntegrationMaybeSingle,
+                })),
+              })),
+            })),
+            update: jest.fn(() => ({
+              eq: mockConnectionUpdateEqFirst,
+            })),
+          };
+        }
+
+        if (table === "integration_sync_runs") {
+          return {
+            insert: jest.fn(() => ({
+              select: jest.fn(() => ({
+                maybeSingle: mockSyncRunMaybeSingle,
+              })),
+            })),
+            update: jest.fn(() => ({
+              eq: mockSyncUpdateEqFirst,
+            })),
+          };
+        }
+
+        if (table === "invoices") {
+          return {
+            select: jest.fn(() => ({
+              eq: mockCountEq,
+            })),
+          };
+        }
+
+        if (table === "customers") {
+          return {
+            select: jest.fn(() => ({
+              eq: mockCountEq2,
+            })),
+          };
+        }
+
+        if (table === "payments") {
+          return {
+            select: jest.fn(() => ({
+              eq: mockCountEq3,
+            })),
+          };
+        }
+
+        if (table === "audit_logs") {
+          return {
+            insert: mockAuditInsert,
+          };
+        }
+
+        return {};
+      }),
+    });
+
+    const formData = new FormData();
+    formData.set("integrationId", "550e8400-e29b-41d4-a716-446655440000");
+    formData.set("direction", "bi_directional");
+
+    await runIntegrationSyncAction(formData);
+
+    expect(mockSyncRunMaybeSingle).toHaveBeenCalled();
+    expect(mockSyncUpdateEqSecond).toHaveBeenCalled();
+    expect(mockConnectionUpdateEqSecond).toHaveBeenCalled();
+    expect(mockAuditInsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        company_id: "company-1",
+        action: "integration.sync",
       }),
     );
     expect(mockRevalidatePath).toHaveBeenCalledWith("/integrations");

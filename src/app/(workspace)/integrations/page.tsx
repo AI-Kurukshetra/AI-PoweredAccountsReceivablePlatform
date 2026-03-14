@@ -2,7 +2,10 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { IntegrationForm } from "@/components/workspace/integration-form";
-import { createIntegrationAction } from "@/app/(workspace)/integrations/actions";
+import {
+  createIntegrationAction,
+  runIntegrationSyncAction,
+} from "@/app/(workspace)/integrations/actions";
 import { getMembershipContext } from "@/lib/company";
 import { createClient } from "@/lib/supabase/server";
 
@@ -26,14 +29,38 @@ export default async function IntegrationsPage() {
   }
 
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("integration_connections")
-    .select("id, name, provider, category, status, health_note, webhook_url, last_sync_at, config")
-    .eq("company_id", membership.companyId)
-    .order("last_sync_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false });
+  const [{ data }, { data: syncRunsData }] = await Promise.all([
+    supabase
+      .from("integration_connections")
+      .select("id, name, provider, category, status, health_note, webhook_url, last_sync_at, config")
+      .eq("company_id", membership.companyId)
+      .order("last_sync_at", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("integration_sync_runs")
+      .select("id, integration_id, direction, status, started_at, finished_at, summary, created_at")
+      .eq("company_id", membership.companyId)
+      .order("created_at", { ascending: false })
+      .limit(12),
+  ]);
 
   const integrations = (data ?? []) as IntegrationRow[];
+  const syncRuns = (syncRunsData ?? []) as {
+    id: string;
+    integration_id: string;
+    direction: string;
+    status: string;
+    started_at: string | null;
+    finished_at: string | null;
+    summary: { invoices_processed?: number; payments_processed?: number } | null;
+    created_at: string;
+  }[];
+  const latestRunByIntegration = new Map<string, (typeof syncRuns)[number]>();
+  for (const run of syncRuns) {
+    if (!latestRunByIntegration.has(run.integration_id)) {
+      latestRunByIntegration.set(run.integration_id, run);
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -120,6 +147,29 @@ export default async function IntegrationsPage() {
                   <p className="mt-4 text-sm text-[var(--ink-soft)]">
                     {connection.health_note ?? "No health notes captured yet."}
                   </p>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-[var(--ink-soft)]">
+                      {latestRunByIntegration.get(connection.id) ? (
+                        <>
+                          Last run {latestRunByIntegration.get(connection.id)?.direction} ·{" "}
+                          {latestRunByIntegration.get(connection.id)?.status}
+                        </>
+                      ) : (
+                        "No sync runs logged yet."
+                      )}
+                    </div>
+                    <form action={runIntegrationSyncAction} className="flex items-center gap-2">
+                      <input type="hidden" name="integrationId" value={connection.id} />
+                      <input
+                        type="hidden"
+                        name="direction"
+                        value={connection.category === "erp" ? "bi_directional" : "push"}
+                      />
+                      <button type="submit" className="secondary-button px-3 py-2 text-xs">
+                        Run sync
+                      </button>
+                    </form>
+                  </div>
                 </article>
               ))}
             </div>
@@ -135,6 +185,45 @@ export default async function IntegrationsPage() {
           <IntegrationForm action={createIntegrationAction} />
         </SectionCard>
       </div>
+
+      <SectionCard eyebrow="Sync history" title="Recent ERP/API sync runs">
+        {syncRuns.length ? (
+          <div className="space-y-3">
+            {syncRuns.map((run) => (
+              <article key={run.id} className="rounded-[20px] border border-[var(--stroke)] bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-[var(--stroke-strong)]">
+                      {run.direction.replaceAll("_", " ")}
+                    </p>
+                    <p className="mt-2 text-sm text-[var(--foreground)]">
+                      Invoices {(run.summary?.invoices_processed ?? 0)} · Payments{" "}
+                      {(run.summary?.payments_processed ?? 0)}
+                    </p>
+                    <p className="mt-1 text-sm text-[var(--ink-soft)]">
+                      Started{" "}
+                      {run.started_at
+                        ? new Date(run.started_at).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : "N/A"}
+                    </p>
+                  </div>
+                  <StatusPill label={run.status} />
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No sync history"
+            copy="Run an integration sync to capture ERP/API run telemetry and outcomes."
+          />
+        )}
+      </SectionCard>
     </div>
   );
 }

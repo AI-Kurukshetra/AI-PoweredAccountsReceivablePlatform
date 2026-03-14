@@ -36,6 +36,7 @@ Open `http://localhost:3000`.
 - Public customer portal route backed by per-customer portal tokens
 - Template, integration, and document records persisted in Supabase
 - Delivery tracking, gateway accounts, recovery snapshots, and compliance controls persisted in Supabase
+- Automated invoice schedules, reminder policies, credit alerts, and integration sync run tracking
 
 ## Next Build Steps
 

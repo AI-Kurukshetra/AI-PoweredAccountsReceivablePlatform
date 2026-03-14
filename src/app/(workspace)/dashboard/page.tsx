@@ -1,5 +1,12 @@
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, CircleDollarSign, Clock3, ShieldAlert } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  CircleDollarSign,
+  Clock3,
+  ShieldAlert,
+} from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -23,6 +30,8 @@ export default async function DashboardPage() {
   const overdueInvoices = snapshot.invoices.filter(
     (invoice) => invoice.status === "overdue" || invoice.status === "disputed",
   );
+  const criticalExceptions = overdueInvoices.length;
+  const showCriticalAlert = criticalExceptions > 1;
   const openReceivables = snapshot.invoices.reduce(
     (sum, invoice) => sum + Number(invoice.balance_due),
     0,
@@ -37,11 +46,19 @@ export default async function DashboardPage() {
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="inline-flex items-center gap-2 rounded-full bg-[var(--danger-soft)] px-3 py-2 text-sm font-medium text-[var(--danger)]">
-          <AlertTriangle className="h-4 w-4" />
-          {overdueInvoices.length
-            ? `${overdueInvoices.length} invoices need immediate attention`
-            : "No critical receivables risk right now"}
+        <div
+          className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium ${
+            showCriticalAlert
+              ? "bg-[var(--danger-soft)] text-[var(--danger)]"
+              : "bg-[var(--brand-soft)] text-[var(--brand)]"
+          }`}
+        >
+          {showCriticalAlert ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+          {showCriticalAlert
+            ? `${criticalExceptions} invoices need immediate attention`
+            : criticalExceptions === 1
+              ? "1 invoice needs monitoring"
+              : "No critical receivables risk right now"}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
